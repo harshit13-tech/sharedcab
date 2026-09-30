@@ -9,9 +9,10 @@
     "lint": "next lint"
   },
   "dependencies": {
-   "next": "15.5.18",
-"react": "19.1.7",
-"react-dom": "19.1.7"
-  },
+  "@supabase/ssr": "^0.12.7",
+  "next": "15.5.18",
+  "react": "19.1.7",
+  "react-dom": "19.1.7"
+}
   "devDependencies": {}
 }
