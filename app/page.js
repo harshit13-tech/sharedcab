@@ -1,137 +1,181 @@
- "use client";
+"use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { createClient } from "@/lib/supabase/client";
 
-const demoRides = [
-  { id: 1, from: "Electronic City", to: "Koramangala", time: "8:30 AM", fare: 1200, seats: 2, routeStart: 0, routeEnd: 20 },
-  { id: 2, from: "Whitefield", to: "MG Road", time: "9:00 AM", fare: 900, seats: 1, routeStart: 0, routeEnd: 15 },
-  { id: 3, from: "HSR Layout", to: "Airport", time: "7:15 AM", fare: 1700, seats: 2, routeStart: 5, routeEnd: 30 }
-];
+function money(value) {
+  return `₹${Number(value || 0).toLocaleString("en-IN")}`;
+}
+
+function formatDateTime(value) {
+  return new Intl.DateTimeFormat("en-IN", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(value));
+}
 
 function estimateShare(totalFare, totalKm, riderKm, riders = 2) {
   if (!totalFare || !totalKm || !riderKm) return 0;
-  // MVP model: allocate 70% by distance and 30% equally among riders.
-  // This is deliberately transparent and will be replaced by a production
-  // route-segment engine after map/route data is connected.
-  const distancePart = totalFare * 0.70 * (riderKm / totalKm);
-  const basePart = totalFare * 0.30 / riders;
+  const distancePart = totalFare * 0.7 * (riderKm / totalKm);
+  const basePart = totalFare * 0.3 / riders;
   return Math.max(0, Math.round(distancePart + basePart));
 }
 
 export default function Home() {
+  const supabase = useMemo(() => createClient(), []);
+  const [user, setUser] = useState(null);
   const [tab, setTab] = useState("find");
   const [pickup, setPickup] = useState("");
   const [destination, setDestination] = useState("");
+  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [time, setTime] = useState("08:30");
   const [fare, setFare] = useState(1200);
-  const [created, setCreated] = useState(false);
+  const [seats, setSeats] = useState(2);
+  const [rides, setRides] = useState([]);
   const [selectedRide, setSelectedRide] = useState(null);
+  const [notice, setNotice] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
 
-  const matches = useMemo(() => {
-    const q = `${pickup} ${destination}`.toLowerCase();
-    if (!q.trim()) return demoRides;
-    return demoRides.filter(r =>
-      `${r.from} ${r.to}`.toLowerCase().includes(pickup.toLowerCase()) ||
-      `${r.from} ${r.to}`.toLowerCase().includes(destination.toLowerCase())
-    );
-  }, [pickup, destination]);
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data }) => setUser(data.user || null));
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => setUser(session?.user || null));
+    loadRides();
+    return () => listener.subscription.unsubscribe();
+  }, [supabase]);
+
+  async function loadRides(filters = {}) {
+    setLoading(true);
+    const qs = new URLSearchParams();
+    if (filters.pickup ?? pickup) qs.set("pickup", filters.pickup ?? pickup);
+    if (filters.destination ?? destination) qs.set("destination", filters.destination ?? destination);
+    const response = await fetch(`/api/rides?${qs.toString()}`, { cache: "no-store" });
+    const data = await response.json();
+    setRides(data.rides || []);
+    if (data.error) setNotice(data.error);
+    setLoading(false);
+  }
+
+  async function createRide(e) {
+    e.preventDefault();
+    setNotice("");
+    if (!user) {
+      window.location.href = "/auth";
+      return;
+    }
+    setBusy(true);
+    const departureTime = new Date(`${date}T${time}`).toISOString();
+    const response = await fetch("/api/rides", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pickup, destination, departureTime, estimatedFare: fare, seatsTotal: seats }),
+    });
+    const data = await response.json();
+    if (!response.ok) setNotice(data.error || "Could not create ride.");
+    else {
+      setNotice("Ride created. Other users can now find it and join.");
+      setTab("find");
+      await loadRides();
+    }
+    setBusy(false);
+  }
+
+  async function joinRide(rideId) {
+    setNotice("");
+    if (!user) {
+      window.location.href = "/auth";
+      return;
+    }
+    setBusy(true);
+    const response = await fetch("/api/rides/join", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rideId }),
+    });
+    const data = await response.json();
+    setNotice(data.error || data.message || "Done.");
+    if (response.ok) await loadRides();
+    setBusy(false);
+  }
+
+  async function signOut() {
+    await supabase.auth.signOut();
+    setUser(null);
+  }
 
   return (
     <main className="page">
       <nav className="nav">
-        <div className="brand"><span className="logo">↗</span> SharedRide</div>
-        <span className="city">Bengaluru</span>
+        <a href="/" className="brand"><span className="logo">↗</span> SharedRide</a>
+        <div className="navRight">
+          <span className="city">Bengaluru</span>
+          {user ? <button className="navButton" onClick={signOut}>Sign out</button> : <a className="navButton" href="/auth">Sign in</a>}
+        </div>
       </nav>
 
       <section className="hero">
         <div className="heroCopy">
           <p className="eyebrow">BENGALURU • COMMUNITY RIDE SHARING</p>
           <h1>Going somewhere?<br /><span>Find people going your way.</span></h1>
-          <p className="sub">Match with people travelling along your route, form a shared ride, and split the estimated fare fairly.</p>
+          <p className="sub">Create a shared ride, discover people travelling the same direction, and coordinate the cab together.</p>
+          {user && <p className="signed">Signed in as {user.email}</p>}
         </div>
 
         <div className="rideBox">
           <div className="tabs">
-            <button className={tab==="find" ? "active":""} onClick={()=>setTab("find")}>Find a ride</button>
-            <button className={tab==="create" ? "active":""} onClick={()=>setTab("create")}>Create a ride</button>
+            <button className={tab === "find" ? "active" : ""} onClick={() => setTab("find")}>Find a ride</button>
+            <button className={tab === "create" ? "active" : ""} onClick={() => setTab("create")}>Create a ride</button>
           </div>
 
           {tab === "find" ? (
             <div className="form">
-              <label>Pickup<input value={pickup} onChange={e=>setPickup(e.target.value)} placeholder="e.g. Electronic City" /></label>
-              <label>Destination<input value={destination} onChange={e=>setDestination(e.target.value)} placeholder="e.g. Koramangala" /></label>
-              <label>Departure<select value={time} onChange={e=>setTime(e.target.value)}>
-                <option value="08:30">8:30 AM</option><option value="09:00">9:00 AM</option><option value="18:30">6:30 PM</option>
-              </select></label>
-              <button className="primary" onClick={()=>document.getElementById("matches").scrollIntoView({behavior:"smooth"})}>Find matching rides →</button>
+              <label>Pickup<input value={pickup} onChange={e => setPickup(e.target.value)} placeholder="e.g. Electronic City" /></label>
+              <label>Destination<input value={destination} onChange={e => setDestination(e.target.value)} placeholder="e.g. Koramangala" /></label>
+              <div className="two">
+                <label>Date<input type="date" value={date} onChange={e => setDate(e.target.value)} /></label>
+                <label>Time<input type="time" value={time} onChange={e => setTime(e.target.value)} /></label>
+              </div>
+              <button className="primary" onClick={() => loadRides()}>Find matching rides →</button>
             </div>
           ) : (
-            <div className="form">
-              <label>Pickup<input value={pickup} onChange={e=>setPickup(e.target.value)} placeholder="Where are you starting?" /></label>
-              <label>Destination<input value={destination} onChange={e=>setDestination(e.target.value)} placeholder="Where are you going?" /></label>
-              <div className="two">
-                <label>Departure<input type="time" value={time} onChange={e=>setTime(e.target.value)} /></label>
-                <label>Estimated cab fare<input type="number" min="0" value={fare} onChange={e=>setFare(Number(e.target.value)||0)} /></label>
-              </div>
-              <button className="primary" onClick={()=>setCreated(true)}>Create ride →</button>
-              {created && <div className="success">Ride created for {pickup || "your route"} → {destination || "your destination"}. In the production version, matching users will see it automatically.</div>}
-            </div>
+            <form className="form" onSubmit={createRide}>
+              <label>Pickup<input required value={pickup} onChange={e => setPickup(e.target.value)} placeholder="Where are you starting?" /></label>
+              <label>Destination<input required value={destination} onChange={e => setDestination(e.target.value)} placeholder="Where are you going?" /></label>
+              <div className="two"><label>Date<input type="date" required value={date} onChange={e => setDate(e.target.value)} /></label><label>Time<input type="time" required value={time} onChange={e => setTime(e.target.value)} /></label></div>
+              <div className="two"><label>Estimated cab fare<input type="number" min="1" required value={fare} onChange={e => setFare(Number(e.target.value) || 0)} /></label><label>Total seats<input type="number" min="1" max="6" value={seats} onChange={e => setSeats(Number(e.target.value) || 1)} /></label></div>
+              <button className="primary" disabled={busy}>{busy ? "Creating…" : "Create ride →"}</button>
+            </form>
           )}
         </div>
       </section>
 
+      {notice && <div className="notice">{notice}</div>}
+
       <section className="section" id="matches">
-        <div className="sectionHead">
-          <div><p className="eyebrow">LIVE MVP DEMO</p><h2>People going your way</h2></div>
-          <span className="count">{matches.length} matches</span>
-        </div>
-        <div className="cards">
-          {matches.map(r => <article className="rideCard" key={r.id}>
-            <div className="route">
-              <div><b>{r.from}</b><small>Pickup</small></div>
-              <div className="line"><i></i><span>{r.routeEnd-r.routeStart} km</span></div>
-              <div><b>{r.to}</b><small>Destination</small></div>
-            </div>
-            <div className="meta"><span>🕐 {r.time}</span><span>👥 {r.seats} seats</span><span>₹{r.fare.toLocaleString("en-IN")} est.</span></div>
-            <button className="secondary" onClick={()=>setSelectedRide(r)}>View fare split</button>
+        <div className="sectionHead"><div><p className="eyebrow">LIVE RIDES</p><h2>People going your way</h2></div><span className="count">{rides.length} open</span></div>
+        {loading ? <div className="empty">Loading rides…</div> : rides.length === 0 ? <div className="empty">No matching rides yet. Create the first one for this route.</div> : <div className="cards">
+          {rides.map(r => <article className="rideCard" key={r.id}>
+            <div className="route"><div><b>{r.pickup}</b><small>Pickup</small></div><div className="line"><i></i><span>shared</span></div><div><b>{r.destination}</b><small>Destination</small></div></div>
+            <div className="meta"><span>🕐 {formatDateTime(r.departure_time)}</span><span>👥 {r.seats_available} seats left</span><span>{money(r.estimated_fare)} est.</span></div>
+            <div className="cardActions"><button className="secondary" onClick={() => setSelectedRide(r)}>Fare preview</button><button className="primary small" disabled={busy || r.user_id === user?.id} onClick={() => joinRide(r.id)}>{r.user_id === user?.id ? "Your ride" : "Join ride"}</button></div>
           </article>)}
-        </div>
+        </div>}
       </section>
 
       <section className="calculator">
-        <div>
-          <p className="eyebrow">FAIR FARE</p>
-          <h2>Pay for the part of the journey you use.</h2>
-          <p className="sub">The MVP uses a transparent distance + base-cost formula. Once maps are connected, the production engine will calculate actual route segments.</p>
-        </div>
+        <div><p className="eyebrow">FAIR FARE</p><h2>Pay for the part of the journey you use.</h2><p className="sub">For now, the app shows an estimated split using a transparent distance + base-cost model. The map-based route engine comes next.</p></div>
         <div className="calcCard">
           <label>Total cab fare<input id="tf" type="number" defaultValue="1700" /></label>
           <label>Total route distance (km)<input id="tk" type="number" defaultValue="20" /></label>
           <label>Your route distance (km)<input id="rk" type="number" defaultValue="10" /></label>
-          <button className="primary" onClick={()=>{
-            const total=Number(document.getElementById("tf").value)||0;
-            const km=Number(document.getElementById("tk").value)||0;
-            const mine=Math.min(Number(document.getElementById("rk").value)||0,km);
-            const out=estimateShare(total,km,mine,2);
-            document.getElementById("calcOut").textContent=`₹${out.toLocaleString("en-IN")}`;
-          }}>Calculate</button>
+          <button className="primary" onClick={() => { const total = Number(document.getElementById("tf").value) || 0; const km = Number(document.getElementById("tk").value) || 0; const mine = Math.min(Number(document.getElementById("rk").value) || 0, km); document.getElementById("calcOut").textContent = money(estimateShare(total, km, mine, 2)); }}>Calculate</button>
           <div className="bigResult"><small>Your estimated share</small><strong id="calcOut">₹595</strong></div>
         </div>
       </section>
 
-      {selectedRide && <div className="modalBack" onClick={()=>setSelectedRide(null)}>
-        <div className="modal" onClick={e=>e.stopPropagation()}>
-          <button className="close" onClick={()=>setSelectedRide(null)}>×</button>
-          <p className="eyebrow">FARE PREVIEW</p>
-          <h2>{selectedRide.from} → {selectedRide.to}</h2>
-          <p className="sub">Estimated cab fare: ₹{selectedRide.fare.toLocaleString("en-IN")}</p>
-          <div className="split"><span>Existing rider</span><b>₹{estimateShare(selectedRide.fare, selectedRide.routeEnd-selectedRide.routeStart, selectedRide.routeEnd-selectedRide.routeStart, 2)}</b></div>
-          <div className="split"><span>Joining rider</span><b>₹{estimateShare(selectedRide.fare, selectedRide.routeEnd-selectedRide.routeStart, 10, 2)}</b></div>
-          <p className="note">Final amounts are estimates. Users arrange the actual cab booking themselves in this MVP.</p>
-        </div>
-      </div>}
+      {selectedRide && <div className="modalBack" onClick={() => setSelectedRide(null)}><div className="modal" onClick={e => e.stopPropagation()}><button className="close" onClick={() => setSelectedRide(null)}>×</button><p className="eyebrow">FARE PREVIEW</p><h2>{selectedRide.pickup} → {selectedRide.destination}</h2><p className="sub">Estimated cab fare: {money(selectedRide.estimated_fare)}</p><div className="split"><span>Full-route rider</span><b>{money(estimateShare(selectedRide.estimated_fare, 20, 20, 2))}</b></div><div className="split"><span>Joining rider (10 km estimate)</span><b>{money(estimateShare(selectedRide.estimated_fare, 20, 10, 2))}</b></div><p className="note">These are estimates until live route segments are connected to a maps provider.</p></div></div>}
 
-      <footer>SharedRide Bengaluru • MVP • No cab booking or payment is processed by this prototype.</footer>
+      <footer>SharedRide Bengaluru • v0.2 • Matching and ride coordination are live; cab booking and payment remain outside the app.</footer>
     </main>
   );
 }
