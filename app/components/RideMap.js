@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   MapContainer,
   TileLayer,
@@ -13,19 +13,40 @@ import {
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 
-const markerIcon = new L.Icon({
-  iconUrl:
-    "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon.png",
-  iconRetinaUrl:
-    "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon-2x.png",
-  shadowUrl:
-    "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png",
-  iconSize: [25, 41],
-  iconAnchor: [12, 41],
+const pickupIcon = new L.DivIcon({
+  className: "",
+  html: `
+    <div style="
+      width:18px;
+      height:18px;
+      background:#16a34a;
+      border:4px solid white;
+      border-radius:50%;
+      box-shadow:0 2px 8px rgba(0,0,0,0.35);
+    "></div>
+  `,
+  iconSize: [18, 18],
+  iconAnchor: [9, 9],
+});
+
+const destinationIcon = new L.DivIcon({
+  className: "",
+  html: `
+    <div style="
+      width:18px;
+      height:18px;
+      background:#dc2626;
+      border:4px solid white;
+      border-radius:50%;
+      box-shadow:0 2px 8px rgba(0,0,0,0.35);
+    "></div>
+  `,
+  iconSize: [18, 18],
+  iconAnchor: [9, 9],
 });
 
 function MapClickHandler({
-  mode,
+  activeField,
   setPickup,
   setDestination,
   reverseGeocode,
@@ -34,7 +55,7 @@ function MapClickHandler({
     click(e) {
       const position = [e.latlng.lat, e.latlng.lng];
 
-      if (mode === "pickup") {
+      if (activeField === "pickup") {
         setPickup(position);
         reverseGeocode(position, "pickup");
       } else {
@@ -47,14 +68,41 @@ function MapClickHandler({
   return null;
 }
 
-function MapCenter({ location }) {
+function MapViewport({ pickup, destination, focusPoint }) {
   const map = useMap();
 
   useEffect(() => {
-    if (location) {
-      map.setView(location, 15);
+    if (focusPoint) {
+      map.setView(focusPoint, 15, {
+        animate: true,
+      });
+      return;
     }
-  }, [location, map]);
+
+    if (pickup && destination) {
+      map.fitBounds([pickup, destination], {
+        padding: [50, 50],
+        maxZoom: 15,
+        animate: true,
+      });
+
+      return;
+    }
+
+    if (pickup) {
+      map.setView(pickup, 15, {
+        animate: true,
+      });
+
+      return;
+    }
+
+    if (destination) {
+      map.setView(destination, 15, {
+        animate: true,
+      });
+    }
+  }, [pickup, destination, focusPoint, map]);
 
   return null;
 }
@@ -64,21 +112,121 @@ export default function RideMap({
   destination,
   setPickup,
   setDestination,
+  pickupName,
+  destinationName,
   setPickupName,
   setDestinationName,
 }) {
-  const [mode, setMode] = useState("pickup");
-  const [currentLocation, setCurrentLocation] = useState(null);
+  const bengaluru = [12.9716, 77.5946];
+
+  const [activeField, setActiveField] = useState("pickup");
+
   const [route, setRoute] = useState([]);
   const [distance, setDistance] = useState(null);
   const [duration, setDuration] = useState(null);
-  const [searchText, setSearchText] = useState("");
+
+  const [pickupResults, setPickupResults] = useState([]);
+  const [destinationResults, setDestinationResults] = useState([]);
+
   const [searching, setSearching] = useState(false);
-  const [results, setResults] = useState([]);
 
-  const bengaluru = [12.9716, 77.5946];
+  const [focusPoint, setFocusPoint] = useState(null);
 
-  async function reverseGeocode(position, type) {
+  const searchTimer = useRef(null);
+  const abortController = useRef(null);
+
+  async function searchLocation(query, field) {
+    const value = query.trim();
+
+    if (value.length < 2) {
+      if (field === "pickup") {
+        setPickupResults([]);
+      } else {
+        setDestinationResults([]);
+      }
+
+      return;
+    }
+
+    if (abortController.current) {
+      abortController.current.abort();
+    }
+
+    const controller = new AbortController();
+    abortController.current = controller;
+
+    setSearching(true);
+
+    try {
+      const response = await fetch(
+        `/api/geocode?q=${encodeURIComponent(value)}`,
+        {
+          signal: controller.signal,
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error("Search failed");
+      }
+
+      if (field === "pickup") {
+        setPickupResults(data.results || []);
+      } else {
+        setDestinationResults(data.results || []);
+      }
+    } catch (error) {
+      if (error.name !== "AbortError") {
+        console.error("Location search failed:", error);
+      }
+    } finally {
+      if (!controller.signal.aborted) {
+        setSearching(false);
+      }
+    }
+  }
+
+  function handleLocationChange(field, value) {
+    setActiveField(field);
+
+    if (field === "pickup") {
+      setPickupName(value);
+      setPickupResults([]);
+    } else {
+      setDestinationName(value);
+      setDestinationResults([]);
+    }
+
+    if (searchTimer.current) {
+      clearTimeout(searchTimer.current);
+    }
+
+    searchTimer.current = setTimeout(() => {
+      searchLocation(value, field);
+    }, 350);
+  }
+
+  function selectSearchResult(result, field) {
+    const position = [
+      Number(result.lat),
+      Number(result.lon),
+    ];
+
+    setFocusPoint(position);
+
+    if (field === "pickup") {
+      setPickup(position);
+      setPickupName(result.display_name);
+      setPickupResults([]);
+    } else {
+      setDestination(position);
+      setDestinationName(result.display_name);
+      setDestinationResults([]);
+    }
+  }
+
+  async function reverseGeocode(position, field) {
     try {
       const response = await fetch(
         `/api/geocode?lat=${position[0]}&lon=${position[1]}`
@@ -86,73 +234,22 @@ export default function RideMap({
 
       const data = await response.json();
 
-      if (!data.result) return;
+      if (!data.result) {
+        return;
+      }
 
-      const address = data.result.address || {};
+      const name = data.result.display_name;
 
-      const name =
-        address.road ||
-        address.neighbourhood ||
-        address.suburb ||
-        address.city_district ||
-        address.city ||
-        data.result.display_name;
-
-      if (type === "pickup") {
+      if (field === "pickup") {
         setPickupName(name);
       } else {
         setDestinationName(name);
       }
+
+      setFocusPoint(position);
     } catch (error) {
       console.error("Reverse geocoding failed:", error);
     }
-  }
-
-  async function searchLocation() {
-    const query = searchText.trim();
-
-    if (!query) return;
-
-    setSearching(true);
-    setResults([]);
-
-    try {
-      const response = await fetch(
-        `/api/geocode?q=${encodeURIComponent(query)}`
-      );
-
-      const data = await response.json();
-
-      if (!response.ok || !data.results?.length) {
-        alert("Location not found. Try a more specific place name.");
-        return;
-      }
-
-      setResults(data.results);
-    } catch (error) {
-      console.error("Location search failed:", error);
-      alert("Could not search for this location.");
-    } finally {
-      setSearching(false);
-    }
-  }
-
-  function selectSearchResult(result) {
-    const position = [
-      Number(result.lat),
-      Number(result.lon),
-    ];
-
-    if (mode === "pickup") {
-      setPickup(position);
-      setPickupName(result.display_name);
-    } else {
-      setDestination(position);
-      setDestinationName(result.display_name);
-    }
-
-    setResults([]);
-    setSearchText("");
   }
 
   function getCurrentLocation() {
@@ -168,9 +265,9 @@ export default function RideMap({
           position.coords.longitude,
         ];
 
-        setCurrentLocation(location);
+        setFocusPoint(location);
 
-        if (mode === "pickup") {
+        if (activeField === "pickup") {
           setPickup(location);
           reverseGeocode(location, "pickup");
         } else {
@@ -179,7 +276,13 @@ export default function RideMap({
         }
       },
       () => {
-        alert("Unable to get your current location.");
+        alert(
+          "Unable to get your current location. Please allow location access."
+        );
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 10000,
       }
     );
   }
@@ -192,6 +295,8 @@ export default function RideMap({
       return;
     }
 
+    let cancelled = false;
+
     async function calculateRoute() {
       try {
         const url =
@@ -202,7 +307,14 @@ export default function RideMap({
         const response = await fetch(url);
         const data = await response.json();
 
-        if (!data.routes?.length) return;
+        if (cancelled) {
+          return;
+        }
+
+        if (!data.routes?.length) {
+          setRoute([]);
+          return;
+        }
 
         const selectedRoute = data.routes[0];
 
@@ -213,179 +325,321 @@ export default function RideMap({
           ]);
 
         setRoute(coordinates);
+
         setDistance(
           (selectedRoute.distance / 1000).toFixed(1)
         );
+
         setDuration(
           Math.round(selectedRoute.duration / 60)
         );
       } catch (error) {
-        console.error("Route calculation failed:", error);
+        if (!cancelled) {
+          console.error("Route calculation failed:", error);
+        }
       }
     }
 
     calculateRoute();
+
+    return () => {
+      cancelled = true;
+    };
   }, [pickup, destination]);
+
+  useEffect(() => {
+    return () => {
+      if (searchTimer.current) {
+        clearTimeout(searchTimer.current);
+      }
+
+      if (abortController.current) {
+        abortController.current.abort();
+      }
+    };
+  }, []);
+
+  const activeResults =
+    activeField === "pickup"
+      ? pickupResults
+      : destinationResults;
 
   return (
     <div className="ride-map-wrapper">
 
-      <div className="map-search">
-        <input
-          value={searchText}
-          onChange={(e) => setSearchText(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              searchLocation();
-            }
-          }}
-          placeholder={
-            mode === "pickup"
-              ? "Search pickup location..."
-              : "Search destination..."
-          }
-        />
+      {/* LOCATION SEARCH CARD */}
 
-        <button
-          type="button"
-          onClick={searchLocation}
-          disabled={searching}
+      <div className="location-picker">
+
+        {/* PICKUP */}
+
+        <div
+          className={`location-field ${
+            activeField === "pickup" ? "active" : ""
+          }`}
         >
-          {searching ? "Searching..." : "Search"}
-        </button>
-      </div>
+          <div className="location-dot pickup-dot"></div>
 
-      {results.length > 0 && (
-        <div className="search-results">
-          {results.map((result) => (
-            <button
-              type="button"
-              key={`${result.place_id}-${result.lat}-${result.lon}`}
-              onClick={() => selectSearchResult(result)}
-            >
-              <strong>{result.display_name}</strong>
-            </button>
-          ))}
+          <div className="location-input-area">
+            <label>Pickup</label>
+
+            <input
+              type="text"
+              value={pickupName}
+              onFocus={() => setActiveField("pickup")}
+              onChange={(e) =>
+                handleLocationChange(
+                  "pickup",
+                  e.target.value
+                )
+              }
+              placeholder="Search pickup location"
+              autoComplete="off"
+              required
+            />
+          </div>
+
+          {activeField === "pickup" &&
+            pickupResults.length > 0 && (
+              <div className="location-suggestions">
+                {pickupResults.map((result) => (
+                  <button
+                    type="button"
+                    key={result.id}
+                    onClick={() =>
+                      selectSearchResult(
+                        result,
+                        "pickup"
+                      )
+                    }
+                  >
+                    <span className="suggestion-icon">
+                      📍
+                    </span>
+
+                    <span>
+                      {result.display_name}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
         </div>
-      )}
 
-      <div className="map-controls">
+        {/* DESTINATION */}
+
+        <div
+          className={`location-field ${
+            activeField === "destination"
+              ? "active"
+              : ""
+          }`}
+        >
+          <div className="location-dot destination-dot"></div>
+
+          <div className="location-input-area">
+            <label>Destination</label>
+
+            <input
+              type="text"
+              value={destinationName}
+              onFocus={() =>
+                setActiveField("destination")
+              }
+              onChange={(e) =>
+                handleLocationChange(
+                  "destination",
+                  e.target.value
+                )
+              }
+              placeholder="Where are you going?"
+              autoComplete="off"
+              required
+            />
+          </div>
+
+          {activeField === "destination" &&
+            destinationResults.length > 0 && (
+              <div className="location-suggestions">
+                {destinationResults.map((result) => (
+                  <button
+                    type="button"
+                    key={result.id}
+                    onClick={() =>
+                      selectSearchResult(
+                        result,
+                        "destination"
+                      )
+                    }
+                  >
+                    <span className="suggestion-icon">
+                      📍
+                    </span>
+
+                    <span>
+                      {result.display_name}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+        </div>
+
+        {/* CURRENT LOCATION */}
+
         <button
           type="button"
+          className="current-location-button"
           onClick={getCurrentLocation}
         >
-          📍 Use Current Location
+          📍 Use my current location
         </button>
 
-        <button
-          type="button"
-          className={mode === "pickup" ? "active" : ""}
-          onClick={() => setMode("pickup")}
-        >
-          📍 Set Pickup
-        </button>
-
-        <button
-          type="button"
-          className={mode === "destination" ? "active" : ""}
-          onClick={() => setMode("destination")}
-        >
-          🏁 Set Destination
-        </button>
+        {searching && (
+          <div className="search-status">
+            Searching locations...
+          </div>
+        )}
       </div>
 
-      <MapContainer
-        center={bengaluru}
-        zoom={12}
-        scrollWheelZoom
-        style={{
-          width: "100%",
-          height: "500px",
-          borderRadius: "16px",
-        }}
-      >
-        <TileLayer
-          attribution="&copy; OpenStreetMap contributors"
-          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-        />
+      {/* MAP */}
 
-        <MapClickHandler
-          mode={mode}
-          setPickup={setPickup}
-          setDestination={setDestination}
-          reverseGeocode={reverseGeocode}
-        />
+      <div className="map-container-wrapper">
 
-        <MapCenter location={currentLocation} />
+        <MapContainer
+          center={bengaluru}
+          zoom={12}
+          scrollWheelZoom
+          style={{
+            width: "100%",
+            height: "500px",
+            borderRadius: "18px",
+          }}
+        >
+          <TileLayer
+            attribution="&copy; OpenStreetMap contributors"
+            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+          />
 
-        {pickup && (
-          <Marker
-            position={pickup}
-            icon={markerIcon}
-            draggable
-            eventHandlers={{
-              dragend: (event) => {
-                const position = event.target.getLatLng();
-                const coordinates = [
-                  position.lat,
-                  position.lng,
-                ];
+          <MapClickHandler
+            activeField={activeField}
+            setPickup={setPickup}
+            setDestination={setDestination}
+            reverseGeocode={reverseGeocode}
+          />
 
-                setPickup(coordinates);
-                reverseGeocode(coordinates, "pickup");
-              },
-            }}
-          >
-            <Popup>📍 Pickup Location</Popup>
-          </Marker>
-        )}
+          <MapViewport
+            pickup={pickup}
+            destination={destination}
+            focusPoint={focusPoint}
+          />
 
-        {destination && (
-          <Marker
-            position={destination}
-            icon={markerIcon}
-            draggable
-            eventHandlers={{
-              dragend: (event) => {
-                const position = event.target.getLatLng();
-                const coordinates = [
-                  position.lat,
-                  position.lng,
-                ];
+          {/* PICKUP MARKER */}
 
-                setDestination(coordinates);
-                reverseGeocode(coordinates, "destination");
-              },
-            }}
-          >
-            <Popup>🏁 Destination</Popup>
-          </Marker>
-        )}
+          {pickup && (
+            <Marker
+              position={pickup}
+              icon={pickupIcon}
+              draggable
+              eventHandlers={{
+                dragend: (event) => {
+                  const position =
+                    event.target.getLatLng();
 
-        {route.length > 0 && (
-          <Polyline positions={route} />
-        )}
-      </MapContainer>
+                  const coordinates = [
+                    position.lat,
+                    position.lng,
+                  ];
+
+                  setPickup(coordinates);
+
+                  reverseGeocode(
+                    coordinates,
+                    "pickup"
+                  );
+                },
+              }}
+            >
+              <Popup>
+                <strong>Pickup</strong>
+                <br />
+                {pickupName || "Pickup location"}
+              </Popup>
+            </Marker>
+          )}
+
+          {/* DESTINATION MARKER */}
+
+          {destination && (
+            <Marker
+              position={destination}
+              icon={destinationIcon}
+              draggable
+              eventHandlers={{
+                dragend: (event) => {
+                  const position =
+                    event.target.getLatLng();
+
+                  const coordinates = [
+                    position.lat,
+                    position.lng,
+                  ];
+
+                  setDestination(coordinates);
+
+                  reverseGeocode(
+                    coordinates,
+                    "destination"
+                  );
+                },
+              }}
+            >
+              <Popup>
+                <strong>Destination</strong>
+                <br />
+                {destinationName ||
+                  "Destination"}
+              </Popup>
+            </Marker>
+          )}
+
+          {/* ROUTE */}
+
+          {route.length > 0 && (
+            <Polyline
+              positions={route}
+              pathOptions={{
+                weight: 5,
+              }}
+            />
+          )}
+        </MapContainer>
+
+      </div>
+
+      {/* ROUTE INFORMATION */}
 
       {pickup && destination && (
         <div className="route-info">
+
           <div>
-            <strong>Distance</strong>
-            <span>{distance} km</span>
+            <span>Distance</span>
+            <strong>{distance} km</strong>
           </div>
 
           <div>
-            <strong>Estimated Time</strong>
-            <span>{duration} min</span>
+            <span>Estimated time</span>
+            <strong>{duration} min</strong>
           </div>
+
         </div>
       )}
 
-      <p className="map-hint">
-        Search for a location or click the map. You can drag
-        either marker to adjust the exact location.
-      </p>
+      <div className="map-hint">
+        Select a location above or drag the markers
+        on the map to adjust your pickup and destination.
+      </div>
+
     </div>
   );
 }
