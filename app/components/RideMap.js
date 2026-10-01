@@ -24,15 +24,22 @@ const markerIcon = new L.Icon({
   iconAnchor: [12, 41],
 });
 
-function MapClickHandler({ mode, setPickup, setDestination }) {
+function MapClickHandler({
+  mode,
+  setPickup,
+  setDestination,
+  reverseGeocode,
+}) {
   useMapEvents({
     click(e) {
       const position = [e.latlng.lat, e.latlng.lng];
 
       if (mode === "pickup") {
         setPickup(position);
+        reverseGeocode(position, "pickup");
       } else {
         setDestination(position);
+        reverseGeocode(position, "destination");
       }
     },
   });
@@ -45,7 +52,7 @@ function MapCenter({ location }) {
 
   useEffect(() => {
     if (location) {
-      map.setView(location, 14);
+      map.setView(location, 15);
     }
   }, [location, map]);
 
@@ -57,14 +64,96 @@ export default function RideMap({
   destination,
   setPickup,
   setDestination,
+  setPickupName,
+  setDestinationName,
 }) {
   const [mode, setMode] = useState("pickup");
   const [currentLocation, setCurrentLocation] = useState(null);
   const [route, setRoute] = useState([]);
   const [distance, setDistance] = useState(null);
   const [duration, setDuration] = useState(null);
+  const [searchText, setSearchText] = useState("");
+  const [searching, setSearching] = useState(false);
+  const [results, setResults] = useState([]);
 
   const bengaluru = [12.9716, 77.5946];
+
+  async function reverseGeocode(position, type) {
+    try {
+      const response = await fetch(
+        `/api/geocode?lat=${position[0]}&lon=${position[1]}`
+      );
+
+      const data = await response.json();
+
+      if (!data.result) return;
+
+      const address = data.result.address || {};
+
+      const name =
+        address.road ||
+        address.neighbourhood ||
+        address.suburb ||
+        address.city_district ||
+        address.city ||
+        data.result.display_name;
+
+      if (type === "pickup") {
+        setPickupName(name);
+      } else {
+        setDestinationName(name);
+      }
+    } catch (error) {
+      console.error("Reverse geocoding failed:", error);
+    }
+  }
+
+  async function searchLocation() {
+    const query = searchText.trim();
+
+    if (!query) return;
+
+    setSearching(true);
+    setResults([]);
+
+    try {
+      const response = await fetch(
+        `/api/geocode?q=${encodeURIComponent(query)}`
+      );
+
+      const data = await response.json();
+
+      if (!response.ok || !data.results?.length) {
+        alert("Location not found. Try a more specific place name.");
+        return;
+      }
+
+      setResults(data.results);
+    } catch (error) {
+      console.error("Location search failed:", error);
+      alert("Could not search for this location.");
+    } finally {
+      setSearching(false);
+    }
+  }
+
+  function selectSearchResult(result) {
+    const position = [
+      Number(result.lat),
+      Number(result.lon),
+    ];
+
+    if (mode === "pickup") {
+      setPickup(position);
+      setPickupName(result.display_name);
+    } else {
+      setDestination(position);
+      setDestinationName(result.display_name);
+    }
+
+    setResults([]);
+    setSearchText("");
+  }
 
   function getCurrentLocation() {
     if (!navigator.geolocation) {
@@ -80,11 +169,17 @@ export default function RideMap({
         ];
 
         setCurrentLocation(location);
-        setPickup(location);
-        setMode("destination");
+
+        if (mode === "pickup") {
+          setPickup(location);
+          reverseGeocode(location, "pickup");
+        } else {
+          setDestination(location);
+          reverseGeocode(location, "destination");
+        }
       },
       () => {
-        alert("Unable to get your location.");
+        alert("Unable to get your current location.");
       }
     );
   }
@@ -111,13 +206,19 @@ export default function RideMap({
 
         const selectedRoute = data.routes[0];
 
-        const coordinates = selectedRoute.geometry.coordinates.map(
-          ([lng, lat]) => [lat, lng]
-        );
+        const coordinates =
+          selectedRoute.geometry.coordinates.map(([lng, lat]) => [
+            lat,
+            lng,
+          ]);
 
         setRoute(coordinates);
-        setDistance((selectedRoute.distance / 1000).toFixed(1));
-        setDuration(Math.round(selectedRoute.duration / 60));
+        setDistance(
+          (selectedRoute.distance / 1000).toFixed(1)
+        );
+        setDuration(
+          Math.round(selectedRoute.duration / 60)
+        );
       } catch (error) {
         console.error("Route calculation failed:", error);
       }
@@ -128,8 +229,52 @@ export default function RideMap({
 
   return (
     <div className="ride-map-wrapper">
+
+      <div className="map-search">
+        <input
+          value={searchText}
+          onChange={(e) => setSearchText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              searchLocation();
+            }
+          }}
+          placeholder={
+            mode === "pickup"
+              ? "Search pickup location..."
+              : "Search destination..."
+          }
+        />
+
+        <button
+          type="button"
+          onClick={searchLocation}
+          disabled={searching}
+        >
+          {searching ? "Searching..." : "Search"}
+        </button>
+      </div>
+
+      {results.length > 0 && (
+        <div className="search-results">
+          {results.map((result) => (
+            <button
+              type="button"
+              key={`${result.place_id}-${result.lat}-${result.lon}`}
+              onClick={() => selectSearchResult(result)}
+            >
+              <strong>{result.display_name}</strong>
+            </button>
+          ))}
+        </div>
+      )}
+
       <div className="map-controls">
-        <button type="button" onClick={getCurrentLocation}>
+        <button
+          type="button"
+          onClick={getCurrentLocation}
+        >
           📍 Use Current Location
         </button>
 
@@ -169,6 +314,7 @@ export default function RideMap({
           mode={mode}
           setPickup={setPickup}
           setDestination={setDestination}
+          reverseGeocode={reverseGeocode}
         />
 
         <MapCenter location={currentLocation} />
@@ -181,7 +327,13 @@ export default function RideMap({
             eventHandlers={{
               dragend: (event) => {
                 const position = event.target.getLatLng();
-                setPickup([position.lat, position.lng]);
+                const coordinates = [
+                  position.lat,
+                  position.lng,
+                ];
+
+                setPickup(coordinates);
+                reverseGeocode(coordinates, "pickup");
               },
             }}
           >
@@ -197,7 +349,13 @@ export default function RideMap({
             eventHandlers={{
               dragend: (event) => {
                 const position = event.target.getLatLng();
-                setDestination([position.lat, position.lng]);
+                const coordinates = [
+                  position.lat,
+                  position.lng,
+                ];
+
+                setDestination(coordinates);
+                reverseGeocode(coordinates, "destination");
               },
             }}
           >
@@ -225,8 +383,8 @@ export default function RideMap({
       )}
 
       <p className="map-hint">
-        Choose Pickup or Destination, then click the map. You can drag either
-        marker to adjust the location.
+        Search for a location or click the map. You can drag
+        either marker to adjust the exact location.
       </p>
     </div>
   );
