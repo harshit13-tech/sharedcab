@@ -1,8 +1,12 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { useEffect, useMemo, useState } from "react";
 import { createClient } from "../lib/supabase/client";
 
+const RideMap = dynamic(() => import("./components/RideMap"), {
+  ssr: false,
+});
 function money(value) {
   return `₹${Number(value || 0).toLocaleString("en-IN")}`;
 }
@@ -27,6 +31,8 @@ export default function Home() {
   const [tab, setTab] = useState("find");
   const [pickup, setPickup] = useState("");
   const [destination, setDestination] = useState("");
+  const [pickupCoords, setPickupCoords] = useState(null);
+  const [destinationCoords, setDestinationCoords] = useState(null);
   const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [time, setTime] = useState("08:30");
   const [fare, setFare] = useState(1200);
@@ -139,8 +145,36 @@ export default function Home() {
             </div>
           ) : (
             <form className="form" onSubmit={createRide}>
-              <label>Pickup<input required value={pickup} onChange={e => setPickup(e.target.value)} placeholder="Where are you starting?" /></label>
-              <label>Destination<input required value={destination} onChange={e => setDestination(e.target.value)} placeholder="Where are you going?" /></label>
+            <label>
+  Pickup
+  <input
+    required
+    value={pickup}
+    onChange={e => setPickup(e.target.value)}
+    placeholder="Where are you starting?"
+  />
+</label>
+
+<label>
+  Destination
+  <input
+    required
+    value={destination}
+    onChange={e => setDestination(e.target.value)}
+    placeholder="Where are you going?"
+  />
+</label>
+
+<div className="map-section">
+  <h3>Choose your locations on the map</h3>
+
+  <RideMap
+    pickup={pickupCoords}
+    destination={destinationCoords}
+    setPickup={setPickupCoords}
+    setDestination={setDestinationCoords}
+  />
+</div>
               <div className="two"><label>Date<input type="date" required value={date} onChange={e => setDate(e.target.value)} /></label><label>Time<input type="time" required value={time} onChange={e => setTime(e.target.value)} /></label></div>
               <div className="two"><label>Estimated cab fare<input type="number" min="1" required value={fare} onChange={e => setFare(Number(e.target.value) || 0)} /></label><label>Total seats<input type="number" min="1" max="6" value={seats} onChange={e => setSeats(Number(e.target.value) || 1)} /></label></div>
               <button className="primary" disabled={busy}>{busy ? "Creating…" : "Create ride →"}</button>
