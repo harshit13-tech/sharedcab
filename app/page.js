@@ -169,11 +169,13 @@ export default function Home() {
   <h3>Choose your locations on the map</h3>
 
   <RideMap
-    pickup={pickupCoords}
-    destination={destinationCoords}
-    setPickup={setPickupCoords}
-    setDestination={setDestinationCoords}
-  />
+  pickup={pickupCoords}
+  destination={destinationCoords}
+  setPickup={setPickupCoords}
+  setDestination={setDestinationCoords}
+  setPickupName={setPickup}
+  setDestinationName={setDestination}
+/>
 </div>
               <div className="two"><label>Date<input type="date" required value={date} onChange={e => setDate(e.target.value)} /></label><label>Time<input type="time" required value={time} onChange={e => setTime(e.target.value)} /></label></div>
               <div className="two"><label>Estimated cab fare<input type="number" min="1" required value={fare} onChange={e => setFare(Number(e.target.value) || 0)} /></label><label>Total seats<input type="number" min="1" max="6" value={seats} onChange={e => setSeats(Number(e.target.value) || 1)} /></label></div>
